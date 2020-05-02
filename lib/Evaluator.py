@@ -5,11 +5,12 @@
 # Developed by: Rafael Padilla (rafael.padilla@smt.ufrj.br)                               #
 #        SMT - Signal Multimedia and Telecommunications Lab                               #
 #        COPPE - Universidade Federal do Rio de Janeiro                                   #
-#        Last modification: Oct 9th 2018                                                 #
+# Last modification: May 2nd 2020 (Arun Rajendra Prabhu : Hochschule Bonn Rhein Sieg)     #
 ###########################################################################################
 
 import os
 import sys
+import math
 from collections import Counter
 
 import matplotlib.pyplot as plt
@@ -18,13 +19,16 @@ import numpy as np
 from BoundingBox import *
 from BoundingBoxes import *
 from utils import *
-
+from PIL import Image, ImageDraw
 
 class Evaluator:
     def GetPascalVOCMetrics(self,
                             boundingboxes,
                             IOUThreshold=0.5,
-                            method=MethodAveragePrecision.EveryPointInterpolation):
+                            method=MethodAveragePrecision.EveryPointInterpolation,
+                            useMask=False,
+                            useBBoxMask=[False, False],
+                            cropMask=False):
         """Get the metrics used by the VOC Pascal 2012 challenge.
         Get
         Args:
@@ -63,14 +67,18 @@ class Evaluator:
                 groundTruths.append([
                     bb.getImageName(),
                     bb.getClassId(), 1,
-                    bb.getAbsoluteBoundingBox(BBFormat.XYX2Y2)
+                    bb.getAbsoluteBoundingBox(BBFormat.XYX2Y2),
+                    bb.getPolygon(useBBoxMask[0]),
+                    bb.getImageSize()
                 ])
             else:
                 detections.append([
                     bb.getImageName(),
                     bb.getClassId(),
                     bb.getConfidence(),
-                    bb.getAbsoluteBoundingBox(BBFormat.XYX2Y2)
+                    bb.getAbsoluteBoundingBox(BBFormat.XYX2Y2),
+                    bb.getPolygon(useBBoxMask[1]),
+                    bb.getImageSize()
                 ])
             # get class
             if bb.getClassId() not in classes:
@@ -103,7 +111,25 @@ class Evaluator:
                 iouMax = sys.float_info.min
                 for j in range(len(gt)):
                     # print('Ground truth gt => %s' % (gt[j][3],))
-                    iou = Evaluator.iou(dects[d][3], gt[j][3])
+                    if useMask:
+                        crop_limits = [0, 0, 0, 0]
+                        widthA, heightA = dects[d][5]
+                        widthB, heightB = gt[j][5]
+                        assert (widthA == widthB) and (heightA == heightB), "Inconsistent image dimensions!"
+                        width, height = widthA, heightA
+                        if cropMask:
+                            xminA, yminA, xmaxA, ymaxA = dects[d][3]
+                            xminB, yminB, xmaxB, ymaxB = gt[j][3]
+                            left_lim = max(math.floor(min(xminA, xminB))-2, 0)
+                            right_lim = min(math.ceil(max(xmaxA, xmaxB))+2, width-1)
+                            top_lim = max(math.floor(min(yminA, yminB))-2, 0)
+                            bottom_lim = min(math.ceil(max(ymaxA, ymaxB))+2, height-1)
+                            crop_limits = [left_lim, top_lim, right_lim, bottom_lim]
+                        dtmask = Evaluator.getBinaryMask(dects[d][4], cropMask, width, height, crop_limits)
+                        gtmask = Evaluator.getBinaryMask(gt[j][4], cropMask, width, height, crop_limits)
+                        iou = Evaluator.iouMask([dects[d][3], dtmask], [gt[j][3], gtmask])
+                    else:
+                        iou = Evaluator.iou(dects[d][3], gt[j][3])
                     if iou > iouMax:
                         iouMax = iou
                         jmax = j
@@ -152,7 +178,10 @@ class Evaluator:
                                  showAP=False,
                                  showInterpolatedPrecision=False,
                                  savePath=None,
-                                 showGraphic=True):
+                                 showGraphic=True,
+                                 useMask=False,
+                                 useBBoxMask=[False, False],
+                                 cropMask=False):
         """PlotPrecisionRecallCurve
         Plot the Precision x Recall curve for a given class.
         Args:
@@ -184,7 +213,7 @@ class Evaluator:
             dict['total TP']: total number of True Positive detections;
             dict['total FP']: total number of False Negative detections;
         """
-        results = self.GetPascalVOCMetrics(boundingBoxes, IOUThreshold, method)
+        results = self.GetPascalVOCMetrics(boundingBoxes, IOUThreshold, method, useMask, useBBoxMask, cropMask)
         result = None
         # Each resut represents a class
         for result in results:
@@ -361,22 +390,41 @@ class Evaluator:
         return [ap, rhoInterp, recallValues, None]
 
     # For each detections, calculate IOU with reference
+    # @staticmethod
+    # def _getAllIOUs(reference, detections):
+    #     ret = []
+    #     bbReference = reference.getAbsoluteBoundingBox(BBFormat.XYX2Y2)
+    #     # img = np.zeros((200,200,3), np.uint8)
+    #     for d in detections:
+    #         bb = d.getAbsoluteBoundingBox(BBFormat.XYX2Y2)
+    #         iou = Evaluator.iou(bbReference, bb)
+    #         # Show blank image with the bounding boxes
+    #         # img = add_bb_into_image(img, d, color=(255,0,0), thickness=2, label=None)
+    #         # img = add_bb_into_image(img, reference, color=(0,255,0), thickness=2, label=None)
+    #         ret.append((iou, reference, d))  # iou, reference, detection
+    #     # cv2.imshow("comparing",img)
+    #     # cv2.waitKey(0)
+    #     # cv2.destroyWindow("comparing")
+    #     return sorted(ret, key=lambda i: i[0], reverse=True)  # sort by iou (from highest to lowest)
+
     @staticmethod
-    def _getAllIOUs(reference, detections):
-        ret = []
-        bbReference = reference.getAbsoluteBoundingBox(BBFormat.XYX2Y2)
-        # img = np.zeros((200,200,3), np.uint8)
-        for d in detections:
-            bb = d.getAbsoluteBoundingBox(BBFormat.XYX2Y2)
-            iou = Evaluator.iou(bbReference, bb)
-            # Show blank image with the bounding boxes
-            # img = add_bb_into_image(img, d, color=(255,0,0), thickness=2, label=None)
-            # img = add_bb_into_image(img, reference, color=(0,255,0), thickness=2, label=None)
-            ret.append((iou, reference, d))  # iou, reference, detection
-        # cv2.imshow("comparing",img)
-        # cv2.waitKey(0)
-        # cv2.destroyWindow("comparing")
-        return sorted(ret, key=lambda i: i[0], reverse=True)  # sort by iou (from highest to lowest)
+    # boxA = (Ax1,Ay1,Ax2,Ay2)
+    # boxB = (Bx1,By1,Bx2,By2)
+    def iouMask(paramA, paramB):
+        if Evaluator._boxesIntersect(paramA[0], paramB[0]) is False:
+            return 0
+        maskA = paramA[1]
+        maskB = paramB[1]
+        interArea = Evaluator._getPolyIntersectionArea(maskA, maskB)
+        union = Evaluator._getPolyUnionArea(maskA, maskB)
+        # intersection over union
+        iou = interArea / union
+        # print(iou)
+        # plt.imshow(maskA, alpha=0.3)
+        # plt.imshow(maskB, alpha=0.3)
+        # plt.show()
+        assert iou >= 0
+        return iou
 
     @staticmethod
     def iou(boxA, boxB):
@@ -405,6 +453,34 @@ class Evaluator:
         return True
 
     @staticmethod
+    def _getMaskFromPoly(poly, width, height, crop=False, crop_limits=[0,0,0,0]):
+        img = Image.new('L', (width, height), 0)
+        ImageDraw.Draw(img).polygon(poly, outline=1, fill=1)
+        mask = np.array(img)
+        if crop:
+            left_lim = crop_limits[0]
+            top_lim = crop_limits[1]
+            right_lim = crop_limits[2]
+            bottom_lim = crop_limits[3]
+            mask = mask[top_lim:bottom_lim+1, left_lim:right_lim+1]
+        return mask
+
+    @staticmethod
+    def getBinaryMask(poly, crop, width, height, crop_limits):
+        # Extract actual binary mask from polygon
+        assert len(poly) > 0, "Invalid polygon. Issue might be in the file generation !"
+        mask = Evaluator._getMaskFromPoly(poly, width, height, crop, crop_limits)
+        return mask
+
+    @staticmethod
+    def _getPolyIntersectionArea(maskA, maskB):
+        intersectionmask = np.logical_and(maskA, maskB)
+        # num_non_neq_pixels = len(np.where(intersectionmask != False)[0])
+        sum_of_non_neq_pixels = np.sum(intersectionmask)
+        # assert num_non_neq_pixels == sum_of_non_neq_pixels, "Error in intersection mask!"
+        return sum_of_non_neq_pixels
+
+    @staticmethod
     def _getIntersectionArea(boxA, boxB):
         xA = max(boxA[0], boxB[0])
         yA = max(boxA[1], boxB[1])
@@ -412,6 +488,14 @@ class Evaluator:
         yB = min(boxA[3], boxB[3])
         # intersection area
         return (xB - xA + 1) * (yB - yA + 1)
+
+    @staticmethod
+    def _getPolyUnionArea(maskA, maskB):
+        unionmask = np.logical_or(maskA, maskB)
+        # num_non_neq_pixels = len(np.where(unionmask != False)[0])
+        sum_of_non_neq_pixels = np.sum(unionmask)
+        # assert num_non_neq_pixels == sum_of_non_neq_pixels, "Error in union mask!"
+        return sum_of_non_neq_pixels
 
     @staticmethod
     def _getUnionAreas(boxA, boxB, interArea=None):

@@ -13,7 +13,8 @@ class BoundingBox:
                  imgSize=None,
                  bbType=BBType.GroundTruth,
                  classConfidence=None,
-                 format=BBFormat.XYWH):
+                 format=BBFormat.XYWH,
+                 poly=[]):
         """Constructor.
         Args:
             imageName: String representing the image name.
@@ -51,6 +52,7 @@ class BoundingBox:
         self._bbType = bbType
         self._classId = classId
         self._format = format
+        self._poly = poly
 
         # If relative coordinates, convert to absolute values
         # For relative coords: (x,y,w,h)=(X_center/img_width , Y_center/img_height)
@@ -86,6 +88,15 @@ class BoundingBox:
         else:
             self._width_img = imgSize[0]
             self._height_img = imgSize[1]
+
+    def getPolygon(self, bboxMask):
+        if bboxMask:
+            # We need to get polygon from the bounding box.
+            xmin, ymin, xmax, ymax = self.getAbsoluteBoundingBox(BBFormat.XYX2Y2)
+            poly = [(xmin, ymin), (xmin, ymax), (xmax, ymax), (xmax, ymin)]
+        else:
+            poly = self._poly
+        return poly
 
     def getAbsoluteBoundingBox(self, format=BBFormat.XYWH):
         if format == BBFormat.XYWH:
